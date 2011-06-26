@@ -1,3 +1,21 @@
+/*
+ * vrctl - Z-Wave VRC0P utility
+ * Copyright 2011 Kevin Cernekee
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 2 of the License, or
+ * (at your option) any later version.
+ * 
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +37,7 @@
 #define RC_NAME			".vrctlrc"
 #define TIMEOUT			500000
 #define NODEID_ALL		-1
+#define MAX_NODEID		232
 
 #define __func__		__FUNCTION__
 
@@ -29,8 +48,116 @@ struct resp {
 	unsigned int		arg1;
 };
 
+struct node_alias {
+	int			nodeid;
+	char			nodename[BUFLEN];
+	struct node_alias	*next;
+};
+
+static struct node_alias *alias_head = NULL, *alias_tail = NULL;
+static char *rc_port = NULL;
+
 /*
- * COMMANDS
+ * RC FILE
+ */
+
+static void parse_rcline(char *filename, int linenum, char *line)
+{
+	char *p = line, tok[BUFLEN];
+
+	if (next_token(&p, tok, BUFLEN) < 0)
+		return;		/* empty line */
+
+	if (strcmp(tok, "#") == 0)
+		return;		/* comment */
+
+	if (strcasecmp(tok, "alias") == 0) {
+		struct node_alias *a;
+		unsigned long nodeid;
+		char *endp;
+
+		a = malloc(sizeof(*a));
+		if (!a)
+			die("out of memory\n");
+		a->next = NULL;
+
+		if (next_token(&p, tok, BUFLEN) < 0) {
+			info(L_WARNING, "%s:%d: missing node name\n",
+				filename, linenum);
+			free(a);
+			return;
+		}
+		strncpy(a->nodename, tok, BUFLEN);
+
+		if (next_token(&p, tok, BUFLEN) < 0) {
+			info(L_WARNING, "%s:%d: missing node number\n",
+				filename, linenum);
+			free(a);
+			return;
+		}
+		nodeid = strtoul(tok, &endp, 10);
+		if (tok[0] == 0 || *endp != 0 || nodeid > MAX_NODEID) {
+			info(L_WARNING, "%s:%d: invalid node number\n",
+				filename, linenum);
+			free(a);
+			return;
+		}
+		a->nodeid = nodeid;
+
+		if (alias_tail != NULL) {
+			alias_tail->next = a;
+			alias_tail = a;
+		} else {
+			alias_head = alias_tail = a;
+		}
+		return;
+	}
+
+	if (strcasecmp(tok, "port") == 0) {
+		if (next_token(&p, tok, BUFLEN) < 0) {
+			info(L_WARNING, "%s:%d: missing device name\n",
+				filename, linenum);
+			return;
+		}
+		rc_port = strdup(tok);
+		return;
+	}
+
+	info(L_WARNING, "%s:%d: unrecognized option '%s'\n",
+		filename, linenum, tok);
+}
+
+static void read_rcfile(void)
+{
+	FILE *f;
+	char filename[BUFLEN], buf[BUFLEN];
+	char *homedir;
+	int linenum = 1;
+
+	homedir = getenv("HOME");
+	if (!homedir) {
+		info(L_WARNING, "warning: HOME is not set so I can't read "
+			"$HOME/%s\n", RC_NAME);
+		return;
+	}
+
+	/* .vrctlrc does not necessarily exist at all */
+	snprintf(filename, BUFLEN, "%s/%s", homedir, RC_NAME);
+	f = fopen(filename, "r");
+	if (f == NULL)
+		return;
+
+	while (fgets(buf, BUFLEN, f) != NULL)
+		parse_rcline(filename, linenum++, buf);
+
+	if (ferror(f))
+		info(L_WARNING, "warning: errors detected reading %s\n",
+			filename);
+	fclose(f);
+}
+
+/*
+ * VRC0P COMMANDS
  */
 
 static int read_resp(int fd, char *buf, int maxlen)
@@ -142,20 +269,14 @@ static void sync_interface(int fd)
 }
 
 /*
- * COMMAND HANDLERS
+ * USER COMMAND HANDLERS
  *
- * Unless otherwise specified (and there ARE a few exceptions), the return
- * value will be:
+ * Unless otherwise specified, the return value will be:
  *
- *  0 - success
- *  anything else - Xnnn error code from the VRC0P (0-255)
+ *   0 - success
+ *  <0 - Xnnn error code from the VRC0P (0-255)
+ *  >0 - dim level (0-255 - handle_status() only)
  */
-
-static int handle_unimplemented(int devfd, int nodeid, char *arg)
-{
-	info(L_ERROR, "command is unimplemented\n");
-	return -1;
-}
 
 static int handle_on(int devfd, int nodeid, char *arg)
 {
@@ -166,9 +287,9 @@ static int handle_on(int devfd, int nodeid, char *arg)
 	else
 		ret = send_then_recv(devfd, 'X', ">N%03dON", nodeid);
 	if (ret != 0)
-		info(L_ERROR, "node %d returned X%03x for ON command\n",
+		info(L_WARNING, "node %d returned X%03x for ON command\n",
 			nodeid, ret);
-	return ret;
+	return -ret;
 }
 
 static int handle_off(int devfd, int nodeid, char *arg)
@@ -180,9 +301,9 @@ static int handle_off(int devfd, int nodeid, char *arg)
 	else
 		ret = send_then_recv(devfd, 'X', ">N%03dOF", nodeid);
 	if (ret != 0)
-		info(L_ERROR, "node %d returned X%03x for OFF command\n",
+		info(L_WARNING, "node %d returned X%03x for OFF command\n",
 			nodeid, ret);
-	return ret;
+	return -ret;
 }
 
 static int handle_bounce(int devfd, int nodeid, char *arg)
@@ -198,14 +319,6 @@ static int handle_bounce(int devfd, int nodeid, char *arg)
 	return handle_on(devfd, nodeid, arg);
 }
 
-/*
- * handle_status_quiet - query the remote node's status (on/off/dimlevel)
- *
- * Return value:
- *  <0 - error (Xnnn code)
- *   0 - node is OFF
- *  >0 - dim level (255 for relay ON)
- */
 static int handle_status_quiet(int devfd, int nodeid, char *arg)
 {
 	int ret;
@@ -216,7 +329,7 @@ static int handle_status_quiet(int devfd, int nodeid, char *arg)
 
 	ret = send_then_recv(devfd, 'X', ">?N%03d", nodeid);
 	if (ret != 0) {
-		info(L_ERROR, "node %d returned X%03x for STATUS command\n",
+		info(L_WARNING, "node %d returned X%03x for STATUS command\n",
 			nodeid, ret);
 		return -ret;
 	}
@@ -258,7 +371,7 @@ static int handle_level(int devfd, int nodeid, char *arg)
 	else
 		ret = send_then_recv(devfd, 'X', ">N%03dL%03d", nodeid, level);
 	if (ret != 0)
-		info(L_ERROR, "node %d returned X%03x for LEVEL command\n",
+		info(L_WARNING, "node %d returned X%03x for LEVEL command\n",
 			nodeid, ret);
 	return ret;
 }
@@ -266,16 +379,15 @@ static int handle_level(int devfd, int nodeid, char *arg)
 static int handle_lock_level(int devfd, int nodeid, int level)
 {
 	int ret;
-	struct resp r;
 
 	if (nodeid == NODEID_ALL)
 		die("error: can't lock/unlock ALL nodes at once\n");
 
 	ret = send_then_recv(devfd, 'X', ">N%03dSS98,1,%d", nodeid, level);
 	if (ret != 0)
-		info(L_ERROR, "node %d returned X%03x for LOCK/UNLOCK "
+		info(L_WARNING, "node %d returned X%03x for LOCK/UNLOCK "
 			"command\n", nodeid, ret);
-	return ret;
+	return -ret;
 }
 
 static int handle_lock(int devfd, int nodeid, char *arg)
@@ -291,16 +403,16 @@ static int handle_unlock(int devfd, int nodeid, char *arg)
 static int handle_scene(int devfd, int nodeid, char *arg)
 {
 	int ret;
-	int scene = parse_uint(arg, 0, "scene number", 232);
+	int scene = parse_uint(arg, 0, "scene number", MAX_NODEID);
 
 	if (nodeid == NODEID_ALL)
 		ret = send_then_recv(devfd, 'X', ">N,S%d", scene);
 	else
 		ret = send_then_recv(devfd, 'X', ">N%03dS%d", nodeid, scene);
 	if (ret != 0)
-		info(L_ERROR, "node %d returned X%03x for SCENE command\n",
+		info(L_WARNING, "node %d returned X%03x for SCENE command\n",
 			nodeid, ret);
-	return ret;
+	return -ret;
 }
 
 
@@ -311,13 +423,22 @@ static int handle_scene(int devfd, int nodeid, char *arg)
 static int lookup_node(char *nodename)
 {
 	unsigned long id;
-	char *endptr;
+	struct node_alias *a;
 
+	/* "all" keyword */
 	if (strcasecmp(nodename, "all") == 0)
 		return NODEID_ALL;
-	id = parse_uint(nodename, 0, "node ID", 232);
 
-	info(L_DEBUG, "%s: '%s' => node %lu\n", __func__, nodename, id);
+	/* check the alias list - first case-insensitive match wins */
+	for (a = alias_head; a != NULL; a = a->next)
+		if (strcasecmp(a->nodename, nodename) == 0) {
+			info(L_DEBUG, "%s: '%s' => node %lu\n", __func__,
+				nodename, a->nodeid);
+			return a->nodeid;
+		}
+
+	/* fall back to parsing it as an integer */
+	id = parse_uint(nodename, 0, "node ID", MAX_NODEID);
 	return (int)id;
 }
 
@@ -344,7 +465,7 @@ static void usage(void)
 	printf("Options:\n");
 	printf("  -v, --verbose       add v's to increase verbosity\n");
 	printf("  -q, --quiet         only display errors\n");
-	printf("  -x, --port=PORT     set port to use (default: /dev/vrc0p)\n");
+	printf("  -x, --port=PORT     set port to use (default: " DEFAULT_DEV ")\n");
 	printf("  -l, --list          list all devices in the network\n");
 	printf("  -h, --help          this help\n");
 	printf("\n");
@@ -390,6 +511,10 @@ int main(int argc, char **argv)
 	char *dev = DEFAULT_DEV;
 	int devfd;
 
+	read_rcfile();
+	if (rc_port != NULL)
+		dev = rc_port;
+
 	while ((opt = getopt_long(argc, argv,
 			optstring, longopts, NULL)) != -1) {
 		switch (opt) {
@@ -397,7 +522,7 @@ int main(int argc, char **argv)
 			g_loglevel++;
 			break;
 		case 'q':
-			g_loglevel = L_ERROR;
+			g_loglevel = L_WARNING;
 			break;
 		case 'x':
 			dev = optarg;

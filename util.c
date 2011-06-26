@@ -1,3 +1,21 @@
+/*
+ * Common utility functions
+ * Copyright 2011 Kevin Cernekee
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 2 of the License, or
+ * (at your option) any later version.
+ * 
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -42,6 +60,32 @@ void info(int level, char *fmt, ...)
 	}
 }
 
+int next_token(char **in, char *tok, int maxlen)
+{
+	int len;
+
+	for (len = 0; len < BUFLEN - 1; (*in)++) {
+		if (**in == 0 || **in == '\r' || **in == '\n') {
+			if (len == 0)
+				return -1;
+			goto done;
+		}
+		if (**in == ' ' || **in == '\t') {
+			if (len != 0)
+				goto done;
+			continue;
+		}
+		*(tok++) = **in;
+		len++;
+	}
+
+	/* if the loop terminates here, truncate the line and return success */
+
+done:
+	*tok = 0;
+	return 0;
+}
+
 static int get_lockname(char *dev, char *buf)
 {
 	/* example: /dev/ttyS0 -> /var/lock/LCK..ttyS0 */
@@ -79,7 +123,7 @@ int lock_tty(char *name, char *caller)
 
 	if (get_lockname(name, lockname) == -1)
 		return -1;
-	
+
 	fd = open(lockname, O_RDONLY);
 	if (fd < 0)
 		return write_lockfile(lockname, caller);
