@@ -8,6 +8,7 @@
 #include <termios.h>
 #include <signal.h>
 #include <getopt.h>
+#include <ctype.h>
 #include <sys/select.h>
 #include <sys/fcntl.h>
 #include <sys/types.h>
@@ -17,36 +18,122 @@
 #define DEFAULT_DEV		"/dev/vrc0p"
 #define RC_NAME			".vrctlrc"
 #define TIMEOUT			500000
+#define NODEID_ALL		-1
 
 #define __func__		__FUNCTION__
 
 struct resp {
-	char			code0;
-	unsigned char		arg0;
-	char			code1;
-	unsigned char		arg1;
+	char			type0;
+	unsigned int		arg0;
+	char			type1;
+	unsigned int		arg1;
 };
 
 /*
  * COMMANDS
  */
 
-static int send_cmd(int fd, char *cmd);
-static int read_resp(int fd, char *buf, int maxlen);
-static int parse_resp(char *buf, struct resp *r);
-static int wait_resp(int fd, char expected_code);
-static int send_then_recv(int fd, char *buf, char expected_code);
+static int read_resp(int fd, char *buf, int maxlen)
+{
+	int ret;
+	ret = read_line(fd, buf, maxlen, TIMEOUT);
+
+	if (ret == -ENOSPC)
+		die("error: input overflow from VRC0P\n");
+	if (ret == -ETIMEDOUT)
+		die("error: timeout waiting for command response\n");
+	return ret;
+}
+
+static int parse_uint(char *str, int maxlen, char *name, int maxval)
+{
+	int i, ret = 0;
+
+	for (i = 0; !maxlen || i < maxlen; i++) {
+		if (str[i] == 0)
+			break;
+		if (!isdigit(str[i]))
+			die("error: invalid %s '%s'\n", name, str);
+		ret = ret * 10 + str[i] - '0';
+	}
+	if (ret < 0 || (maxval != 0 && ret > maxval))
+		die("error: %s must be lower than %d\n", name, maxval);
+	return ret;
+}
+
+static int parse_resp(char *buf, struct resp *r)
+{
+	/*
+	 * Some valid inputs look like:
+	 * >E001
+	 * >X000
+	 * >N003L000
+	 *
+	 * Numbers are in decimal notation, typically 0-255.
+	 */
+
+	if (buf[0] != '<')
+		return -1;
+	if (buf[1] < 'A' || buf[1] > 'Z')
+		return -1;
+
+	r->type0 = buf[1];
+	r->arg0 = parse_uint(&buf[2], 3, "arg0", 0);
+
+	if (buf[5] == 0) {
+		r->type1 = 0;
+		return 0;
+	}
+
+	r->type1 = buf[5];
+	r->arg1 = parse_uint(&buf[6], 3, "arg1", 0);
+
+	return 0;
+}
+
+static void wait_resp(int fd, char expected_type, struct resp *r)
+{
+	char buf[BUFLEN];
+
+	do {
+		read_resp(fd, buf, BUFLEN);
+		if (parse_resp(buf, r) < 0)
+			die("error: received bad response '%s'\n", buf);
+
+		if (r->type0 == 'E' && r->arg0 != 0)
+			die("error: received E%03d while waiting for "
+				"'%c' response\n", r->arg0, expected_type);
+	} while (r->type0 != expected_type);
+}
+
+static int send_then_recv(int fd, char expected_type, char *fmt, ...)
+{
+	va_list ap;
+	char buf[BUFLEN];
+	struct resp r;
+
+	va_start(ap, fmt);
+	vsnprintf(buf, BUFLEN, fmt, ap);
+	va_end(ap);
+
+	write_line(fd, buf);
+	wait_resp(fd, expected_type, &r);
+	return r.arg0;
+}
 
 static void sync_interface(int fd)
 {
 	char buf[BUFLEN];
 	int i, ret;
 
+	usleep(25000);
 	flush_bytes(fd);
 	/* hit "enter" on the serial line until we get <E000 back */
 	for (i = 0; i < 3; i++) {
-		write_line(fd, "\r\n");
+		write_line(fd, "");
+
 		ret = read_line(fd, buf, BUFLEN, TIMEOUT);
+
 		if (ret > 0 && strcmp(buf, "<E000") == 0)
 			return;
 		sleep(1);
@@ -56,6 +143,12 @@ static void sync_interface(int fd)
 
 /*
  * COMMAND HANDLERS
+ *
+ * Unless otherwise specified (and there ARE a few exceptions), the return
+ * value will be:
+ *
+ *  0 - success
+ *  anything else - Xnnn error code from the VRC0P (0-255)
  */
 
 static int handle_unimplemented(int devfd, int nodeid, char *arg)
@@ -66,8 +159,150 @@ static int handle_unimplemented(int devfd, int nodeid, char *arg)
 
 static int handle_on(int devfd, int nodeid, char *arg)
 {
-	return 0;
+	int ret;
+
+	if (nodeid == NODEID_ALL)
+		ret = send_then_recv(devfd, 'X', ">N,ON");
+	else
+		ret = send_then_recv(devfd, 'X', ">N%03dON", nodeid);
+	if (ret != 0)
+		info(L_ERROR, "node %d returned X%03x for ON command\n",
+			nodeid, ret);
+	return ret;
 }
+
+static int handle_off(int devfd, int nodeid, char *arg)
+{
+	int ret;
+
+	if (nodeid == NODEID_ALL)
+		ret = send_then_recv(devfd, 'X', ">N,OF");
+	else
+		ret = send_then_recv(devfd, 'X', ">N%03dOF", nodeid);
+	if (ret != 0)
+		info(L_ERROR, "node %d returned X%03x for OFF command\n",
+			nodeid, ret);
+	return ret;
+}
+
+static int handle_bounce(int devfd, int nodeid, char *arg)
+{
+	int ret;
+
+	ret = handle_off(devfd, nodeid, arg);
+	if (ret != 0)
+		return ret;
+
+	usleep(500000);
+
+	return handle_on(devfd, nodeid, arg);
+}
+
+/*
+ * handle_status_quiet - query the remote node's status (on/off/dimlevel)
+ *
+ * Return value:
+ *  <0 - error (Xnnn code)
+ *   0 - node is OFF
+ *  >0 - dim level (255 for relay ON)
+ */
+static int handle_status_quiet(int devfd, int nodeid, char *arg)
+{
+	int ret;
+	struct resp r;
+
+	if (nodeid == NODEID_ALL)
+		die("error: can't check status of ALL nodes at once\n");
+
+	ret = send_then_recv(devfd, 'X', ">?N%03d", nodeid);
+	if (ret != 0) {
+		info(L_ERROR, "node %d returned X%03x for STATUS command\n",
+			nodeid, ret);
+		return -ret;
+	}
+
+	do {
+		wait_resp(devfd, 'N', &r);
+	} while (r.arg0 != nodeid || r.type1 != 'L');
+
+	return r.arg1;
+}
+
+static int handle_status(int devfd, int nodeid, char *arg)
+{
+	int ret = handle_status_quiet(devfd, nodeid, arg);
+	info(L_NORMAL, "%03d\n", ret);
+	return ret;
+}
+
+static int handle_toggle(int devfd, int nodeid, char *arg)
+{
+	int ret;
+
+	ret = handle_status_quiet(devfd, nodeid, arg);
+	if (ret < 0)
+		return ret;
+	if (ret == 0)
+		return handle_on(devfd, nodeid, arg);
+	else
+		return handle_off(devfd, nodeid, arg);
+}
+
+static int handle_level(int devfd, int nodeid, char *arg)
+{
+	int ret;
+	int level = parse_uint(arg, 0, "brightness level", 255);
+
+	if (nodeid == NODEID_ALL)
+		ret = send_then_recv(devfd, 'X', ">N,L%03d", level);
+	else
+		ret = send_then_recv(devfd, 'X', ">N%03dL%03d", nodeid, level);
+	if (ret != 0)
+		info(L_ERROR, "node %d returned X%03x for LEVEL command\n",
+			nodeid, ret);
+	return ret;
+}
+
+static int handle_lock_level(int devfd, int nodeid, int level)
+{
+	int ret;
+	struct resp r;
+
+	if (nodeid == NODEID_ALL)
+		die("error: can't lock/unlock ALL nodes at once\n");
+
+	ret = send_then_recv(devfd, 'X', ">N%03dSS98,1,%d", nodeid, level);
+	if (ret != 0)
+		info(L_ERROR, "node %d returned X%03x for LOCK/UNLOCK "
+			"command\n", nodeid, ret);
+	return ret;
+}
+
+static int handle_lock(int devfd, int nodeid, char *arg)
+{
+	return handle_lock_level(devfd, nodeid, 255);
+}
+
+static int handle_unlock(int devfd, int nodeid, char *arg)
+{
+	return handle_lock_level(devfd, nodeid, 0);
+}
+
+static int handle_scene(int devfd, int nodeid, char *arg)
+{
+	int ret;
+	int scene = parse_uint(arg, 0, "scene number", 232);
+
+	if (nodeid == NODEID_ALL)
+		ret = send_then_recv(devfd, 'X', ">N,S%d", scene);
+	else
+		ret = send_then_recv(devfd, 'X', ">N%03dS%d", nodeid, scene);
+	if (ret != 0)
+		info(L_ERROR, "node %d returned X%03x for SCENE command\n",
+			nodeid, ret);
+	return ret;
+}
+
 
 /*
  * UI
@@ -78,11 +313,11 @@ static int lookup_node(char *nodename)
 	unsigned long id;
 	char *endptr;
 
-	id = strtoul(nodename, &endptr, 10);
-	if (*nodename == 0 || *endptr != 0)
-		die("invalid node '%s'\n", nodename);
+	if (strcasecmp(nodename, "all") == 0)
+		return NODEID_ALL;
+	id = parse_uint(nodename, 0, "node ID", 232);
 
-	info(L_DEBUG, "%s: '%s' => node %d\n", __func__, nodename, id);
+	info(L_DEBUG, "%s: '%s' => node %lu\n", __func__, nodename, id);
 	return (int)id;
 }
 
@@ -139,14 +374,14 @@ struct vrctl_cmd {
 
 static struct vrctl_cmd cmd_table[] = {
 	{ "on",		0,	handle_on },
-	{ "off",	0,	handle_unimplemented },
-	{ "bounce",	0,	handle_unimplemented },
-	{ "toggle",	0,	handle_unimplemented },
-	{ "level",	1,	handle_unimplemented },
-	{ "status",	0,	handle_unimplemented },
-	{ "lock",	0,	handle_unimplemented },
-	{ "unlock",	0,	handle_unimplemented },
-	{ "scene",	1,	handle_unimplemented },
+	{ "off",	0,	handle_off },
+	{ "bounce",	0,	handle_bounce },
+	{ "toggle",	0,	handle_toggle },
+	{ "level",	1,	handle_level },
+	{ "status",	0,	handle_status },
+	{ "lock",	0,	handle_lock },
+	{ "unlock",	0,	handle_unlock },
+	{ "scene",	1,	handle_scene },
 };
 
 int main(int argc, char **argv)

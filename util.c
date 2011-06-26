@@ -140,6 +140,12 @@ int set_tty_defaults(int fd, int baud)
 unsigned char read_byte(int fd)
 {
 	char c;
+	fd_set s;
+
+	FD_ZERO(&s);
+	FD_SET(fd, &s);
+	select(fd + 1, &s, NULL, NULL, NULL);
+
 	if (read(fd, &c, 1) != 1)
 		die("EOF or read error on tty\n");
 	return c;
@@ -169,10 +175,8 @@ void flush_bytes(int fd)
 		read_byte(fd);
 }
 
-void write_line(int fd, char *buf)
+static void write_loop(int fd, char *buf, int len)
 {
-	int len = strlen(buf);
-
 	while (len) {
 		int bytes = write(fd, buf, len);
 		if (bytes <= 0)
@@ -182,9 +186,19 @@ void write_line(int fd, char *buf)
 	}
 }
 
+void write_line(int fd, char *buf)
+{
+	int len = strlen(buf);
+	char eol[] = "\r";
+
+	info(L_DEBUG, "%s: sending '%s'\n", __func__, buf);
+	write_loop(fd, buf, len);
+	write_loop(fd, eol, 2);
+}
+
 int read_line(int fd, char *buf, int maxlen, int timeout)
 {
-	char c;
+	char c, *ptr = buf;
 	int len = 0;
 
 	while (len < maxlen) {
@@ -192,17 +206,18 @@ int read_line(int fd, char *buf, int maxlen, int timeout)
 		c = read_byte(fd);
 		if (c == '\r' || c == '\n') {
 			if (len != 0) {
-				*buf = 0;
+				*ptr = 0;
+				info(L_DEBUG, "%s: got '%s'\n", __func__, buf);
 				return len;
 			}
 			/* ignore empty lines or leading [\r\n] */
 			continue;
 		}
-		*(buf++) = c;
+		*(ptr++) = c;
 		len++;
 	}
 
-	/* out of buffer space and still no EOL */
-	*buf = 0;
+	*ptr = 0;
+	info(L_DEBUG, "%s: out of buffer space\n", __func__);
 	return -ENOSPC;
 }
