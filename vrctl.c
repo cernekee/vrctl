@@ -555,10 +555,14 @@ int main(int argc, char **argv)
 			do_list = 1;
 			break;
 		case 'h':
+		default:
 			usage();
 		}
 
 	}
+
+	if (optind >= argc)
+		usage();
 
 	if (lock_tty(dev, "vrctl") < 0)
 		die("error: %s is locked\n", dev);
