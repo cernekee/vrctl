@@ -36,7 +36,7 @@
 #define DEFAULT_DEV		"/dev/vrc0p"
 #define RC_NAME			".vrctlrc"
 #define TIMEOUT			500000
-#define NODEID_ALL		-1
+#define NODEID_ALL		-2
 #define MAX_NODEID		232
 
 #define __func__		__FUNCTION__
@@ -60,6 +60,20 @@ static char *rc_port = NULL;
 /*
  * RC FILE
  */
+
+static int lookup_alias(char *nodename)
+{
+	struct node_alias *a;
+
+	/* check the alias list - first case-insensitive match wins */
+	for (a = alias_head; a != NULL; a = a->next)
+		if (strcasecmp(a->nodename, nodename) == 0) {
+			info(L_DEBUG, "%s: '%s' => node %lu\n", __func__,
+				nodename, a->nodeid);
+			return a->nodeid;
+		}
+	return -1;
+}
 
 static void parse_rcline(char *filename, int linenum, char *line)
 {
@@ -95,14 +109,22 @@ static void parse_rcline(char *filename, int linenum, char *line)
 			free(a);
 			return;
 		}
-		nodeid = strtoul(tok, &endp, 10);
-		if (tok[0] == 0 || *endp != 0 || nodeid > MAX_NODEID) {
-			info(L_WARNING, "%s:%d: invalid node number\n",
-				filename, linenum);
-			free(a);
-			return;
+
+		nodeid = lookup_alias(tok);
+		if (nodeid == -1) {
+			nodeid = strtoul(tok, &endp, 10);
+			if (tok[0] == 0 || *endp != 0 || nodeid > MAX_NODEID) {
+				info(L_WARNING, "%s:%d: invalid node number\n",
+					filename, linenum);
+				free(a);
+				return;
+			}
 		}
 		a->nodeid = nodeid;
+
+		/* note: g_loglevel is probably not set yet */
+		info(L_DEBUG, "%s: adding alias '%s' for nodeid %d\n",
+			__func__, a->nodename, a->nodeid);
 
 		if (alias_tail != NULL) {
 			alias_tail->next = a;
@@ -160,10 +182,10 @@ static void read_rcfile(void)
  * VRC0P COMMANDS
  */
 
-static int read_resp(int fd, char *buf, int maxlen)
+static int read_resp(int devfd, char *buf, int maxlen)
 {
 	int ret;
-	ret = read_line(fd, buf, maxlen, TIMEOUT);
+	ret = read_line(devfd, buf, maxlen, TIMEOUT);
 
 	if (ret == -ENOSPC)
 		die("error: input overflow from VRC0P\n");
@@ -218,12 +240,12 @@ static int parse_resp(char *buf, struct resp *r)
 	return 0;
 }
 
-static void wait_resp(int fd, char expected_type, struct resp *r)
+static void wait_resp(int devfd, char expected_type, struct resp *r)
 {
 	char buf[BUFLEN];
 
 	do {
-		read_resp(fd, buf, BUFLEN);
+		read_resp(devfd, buf, BUFLEN);
 		if (parse_resp(buf, r) < 0)
 			die("error: received bad response '%s'\n", buf);
 
@@ -233,7 +255,7 @@ static void wait_resp(int fd, char expected_type, struct resp *r)
 	} while (r->type0 != expected_type);
 }
 
-static int send_then_recv(int fd, char expected_type, char *fmt, ...)
+static int send_then_recv(int devfd, char expected_type, char *fmt, ...)
 {
 	va_list ap;
 	char buf[BUFLEN];
@@ -243,29 +265,37 @@ static int send_then_recv(int fd, char expected_type, char *fmt, ...)
 	vsnprintf(buf, BUFLEN, fmt, ap);
 	va_end(ap);
 
-	write_line(fd, buf);
-	wait_resp(fd, expected_type, &r);
+	write_line(devfd, buf);
+	wait_resp(devfd, expected_type, &r);
 	return r.arg0;
 }
 
-static void sync_interface(int fd)
+static void sync_interface(int devfd)
 {
 	char buf[BUFLEN];
 	int i, ret;
 
 	usleep(25000);
-	flush_bytes(fd);
+	flush_bytes(devfd);
 	/* hit "enter" on the serial line until we get <E000 back */
 	for (i = 0; i < 3; i++) {
-		write_line(fd, "");
+		write_line(devfd, "");
 
-		ret = read_line(fd, buf, BUFLEN, TIMEOUT);
+		ret = read_line(devfd, buf, BUFLEN, TIMEOUT);
 
 		if (ret > 0 && strcmp(buf, "<E000") == 0)
 			return;
 		sleep(1);
 	}
 	die("error: can't establish communication with VRC0P interface\n");
+}
+
+static void update_nodes(int devfd)
+{
+	/* possible workaround for VRC0P firmware hangs */
+	usleep(700000);
+
+	send_then_recv(devfd, 'E', ">UP");
 }
 
 /*
@@ -422,24 +452,18 @@ static int handle_scene(int devfd, int nodeid, char *arg)
 
 static int lookup_node(char *nodename)
 {
-	unsigned long id;
-	struct node_alias *a;
+	int id;
 
 	/* "all" keyword */
 	if (strcasecmp(nodename, "all") == 0)
 		return NODEID_ALL;
 
-	/* check the alias list - first case-insensitive match wins */
-	for (a = alias_head; a != NULL; a = a->next)
-		if (strcasecmp(a->nodename, nodename) == 0) {
-			info(L_DEBUG, "%s: '%s' => node %lu\n", __func__,
-				nodename, a->nodeid);
-			return a->nodeid;
-		}
+	id = lookup_alias(nodename);
+	if (id > 0)
+		return id;
 
 	/* fall back to parsing it as an integer */
-	id = parse_uint(nodename, 0, "node ID", MAX_NODEID);
-	return (int)id;
+	return parse_uint(nodename, 0, "node ID", MAX_NODEID);
 }
 
 static const struct option longopts[] = {
@@ -582,6 +606,7 @@ int main(int argc, char **argv)
 		entry->handler(devfd, nodeid, arg);
 	}
 
+	update_nodes(devfd);
 	unlock_tty(dev);
 	return 0;
 }
