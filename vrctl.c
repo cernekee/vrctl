@@ -581,7 +581,8 @@ static void st_cmd(int devfd, const char *out, int outlen, int inlen)
 
 	write(devfd, out, outlen);
 	if (inlen && st_getbytes(devfd, buf, inlen) < 0)
-		die("target quit responding\n");
+		die("error: target quit responding.  "
+			"Cycle power and try again.\n");
 }
 
 static void st_parsehex(unsigned char *out, char *in)
@@ -629,7 +630,7 @@ static void st_termsetup(int fd)
 static int upgrade_st(int devfd, FILE *f)
 {
 	char buf[BUFLEN];
-	int i;
+	int i, ret = 0;
 
 	st_termsetup(devfd);
 
@@ -655,7 +656,8 @@ static int upgrade_st(int devfd, FILE *f)
 			usleep(20000);
 		}
 		if (i == 4)
-			die("can't establish communication with target\n");
+			die("error: can't establish communication with "
+				"target.  Cycle power and try again.\n");
 	}
 
 	info(L_NORMAL, "Erasing...\n");
@@ -697,8 +699,13 @@ static int upgrade_st(int devfd, FILE *f)
 		st_cmd(devfd, (char *)binbuf, 5, 1);
 
 		len = strlen(buf);
-		if (len <= 11)
+		/* each line needs to have 1-16 data bytes */
+		if (len < 13 || len > 43) {
+			info(L_WARNING, "warning: malformed line '%s'\n",
+				buf);
+			ret = 1;
 			continue;
+		}
 		len = (len - 11) >> 1;
 
 		binbuf[0] = len - 1;
@@ -712,7 +719,7 @@ static int upgrade_st(int devfd, FILE *f)
 	st_cmd(devfd, "\x21\xde", 2, 1);
 	st_cmd(devfd, "\x08\x00\x00\x00\x08", 5, 0);
 
-	return 0;
+	return ret;
 }
 
 static int handle_upgrade(int devfd, char *firmware)
