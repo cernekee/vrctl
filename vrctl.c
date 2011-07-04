@@ -36,8 +36,8 @@
 #define BUFLEN			64
 #define DEFAULT_DEV		"/dev/vrc0p"
 #define RC_NAME			".vrctlrc"
-#define TIMEOUT			500000
-#define TIMEOUT_UPGRADE		3000000
+#define TIMEOUT			3000000
+#define TIMEOUT_UPGRADE		4000000
 #define NODEID_ALL		-2
 #define MAX_NODEID		232
 
@@ -294,9 +294,6 @@ static void sync_interface(int devfd)
 
 static void update_nodes(int devfd)
 {
-	/* possible workaround for VRC0P firmware hangs */
-	usleep(700000);
-
 	send_then_recv(devfd, 'E', ">UP");
 }
 
@@ -447,9 +444,29 @@ static int handle_scene(int devfd, int nodeid, char *arg)
 	return -ret;
 }
 
+static void search_by_type(int devfd, int gen_class, char *class_name)
+{
+	int ret, i;
+
+	info(L_VERBOSE, "%s: searching for type %d (%s)\n", __func__,
+		gen_class, class_name);
+
+	for (i = 1; i <= MAX_NODEID; i++) {
+		ret = send_then_recv(devfd, 'F', ">?FI0,%d,0,%d", gen_class, i);
+		if (ret <= 0)
+			break;
+		info(L_NORMAL, "%03d: %s (generic class %d, instance %d)\n",
+			ret, class_name, gen_class, i);
+	}
+}
+
 static int handle_list(int devfd)
 {
-	return 1;
+	search_by_type(devfd, 16, "switch/appliance");
+	search_by_type(devfd, 17, "dimmer");
+	search_by_type(devfd, 8, "thermostat");
+	search_by_type(devfd, 1, "controller");
+	return 0;
 }
 
 /*
