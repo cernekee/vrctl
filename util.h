@@ -48,7 +48,7 @@ int set_tty_defaults(int fd, int baud);
 unsigned char read_byte(int fd);
 void read_bytes(int fd, unsigned char *buff, int maxlen);
 void flush_bytes(int fd);
-int read_line(int fd, char *buf, int maxlen, int timeout);
+int read_line(int fd, char *buf, int maxlen, int timeout_us);
 void write_line(int fd, char *buf);
 
 #endif /* _UTIL_H_ */

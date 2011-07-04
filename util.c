@@ -56,6 +56,7 @@ void info(int level, char *fmt, ...)
 	if (g_loglevel >= level) {
 		va_start(ap, fmt);
 		vprintf(fmt, ap);
+		fflush(stdout);
 		va_end(ap);
 	}
 }
@@ -240,13 +241,24 @@ void write_line(int fd, char *buf)
 	write_loop(fd, eol, 2);
 }
 
-int read_line(int fd, char *buf, int maxlen, int timeout)
+int read_line(int fd, char *buf, int maxlen, int timeout_us)
 {
 	char c, *ptr = buf;
 	int len = 0;
 
 	while (len < maxlen) {
-		/* XXX need to add timeout */
+		struct timeval tv;
+		fd_set s;
+
+		FD_ZERO(&s);
+		FD_SET(fd, &s);
+		tv.tv_sec = timeout_us / 1000000;
+		tv.tv_usec = timeout_us % 1000000;
+
+		if (select(fd + 1, &s, NULL, NULL, &tv) != 1) {
+			info(L_DEBUG, "%s: timed out\n", __func__);
+			return -ETIMEDOUT;
+		}
 		c = read_byte(fd);
 		if (c == '\r' || c == '\n') {
 			if (len != 0) {
