@@ -63,18 +63,19 @@ static char *rc_port = NULL;
  * RC FILE
  */
 
-static int lookup_alias(char *nodename)
+/* check the alias list - next case-insensitive match wins */
+static struct node_alias *lookup_next_alias(char *nodename,
+	struct node_alias *start)
 {
-	struct node_alias *a;
+	struct node_alias *a = start ? start->next : alias_head;
 
-	/* check the alias list - first case-insensitive match wins */
-	for (a = alias_head; a != NULL; a = a->next)
+	for (; a != NULL; a = a->next)
 		if (strcasecmp(a->nodename, nodename) == 0) {
 			info(L_DEBUG, "%s: '%s' => node %lu\n", __func__,
 				nodename, a->nodeid);
-			return a->nodeid;
+			return a;
 		}
-	return -1;
+	return NULL;
 }
 
 static void parse_rcline(char *filename, int linenum, char *line)
@@ -88,7 +89,7 @@ static void parse_rcline(char *filename, int linenum, char *line)
 		return;		/* comment */
 
 	if (strcasecmp(tok, "alias") == 0) {
-		struct node_alias *a;
+		struct node_alias *a, *chain;
 		unsigned long nodeid;
 		char *endp;
 
@@ -112,8 +113,11 @@ static void parse_rcline(char *filename, int linenum, char *line)
 			return;
 		}
 
-		nodeid = lookup_alias(tok);
-		if (nodeid == -1) {
+		/* it is legal to refer to a previously defined alias */
+		chain = lookup_next_alias(tok, NULL);
+		if (chain)
+			nodeid = chain->nodeid;
+		else {
 			nodeid = strtoul(tok, &endp, 10);
 			if (tok[0] == 0 || *endp != 0 || nodeid > MAX_NODEID) {
 				info(L_WARNING, "%s:%d: invalid node number\n",
@@ -755,20 +759,32 @@ static int handle_upgrade(int devfd, char *firmware)
  * UI
  */
 
-static int lookup_node(char *nodename)
+static int run_command(int devfd, char *nodename,
+	int (*handler)(int devfd, int nodeid, char *arg), char *arg)
 {
-	int id;
+	int id, ret;
+	struct node_alias *a;
 
 	/* "all" keyword */
 	if (strcasecmp(nodename, "all") == 0)
-		return NODEID_ALL;
+		return handler(devfd, NODEID_ALL, arg);
 
-	id = lookup_alias(nodename);
-	if (id > 0)
-		return id;
+	/* single or multiple alias match */
+	a = lookup_next_alias(nodename, NULL);
+	if (a) {
+		while (1) {
+			/* note: return status only reflects the LAST command */
+			ret = handler(devfd, a->nodeid, arg);
+
+			a = lookup_next_alias(nodename, a);
+			if (a == NULL)
+				return ret;
+		}
+	}
 
 	/* fall back to parsing it as an integer */
-	return parse_uint(nodename, 0, "node ID", MAX_NODEID);
+	id = parse_uint(nodename, 0, "node ID", MAX_NODEID);
+	return handler(devfd, id, arg);
 }
 
 static const struct option longopts[] = {
@@ -838,7 +854,7 @@ static struct vrctl_cmd cmd_table[] = {
 
 int main(int argc, char **argv)
 {
-	int opt, do_list = 0, nodeid, synced = 0, no_cmdlist = 0, ret = 0;
+	int opt, do_list = 0, synced = 0, no_cmdlist = 0, ret = 0;
 	char *dev = DEFAULT_DEV, *firmware = NULL;
 	int devfd;
 
@@ -903,7 +919,8 @@ int main(int argc, char **argv)
 		char *nodename, *command, *arg = NULL;
 
 		nodename = argv[optind++];
-		nodeid = lookup_node(nodename);
+
+		/* parse the command first */
 
 		if (optind >= argc)
 			die("error: command for node '%s' was not specified\n",
@@ -929,7 +946,9 @@ int main(int argc, char **argv)
 			sync_interface(devfd);
 			synced = 1;
 		}
-		entry->handler(devfd, nodeid, arg);
+
+		/* parse the nodeid(s) and execute the command */
+		run_command(devfd, nodename, entry->handler, arg);
 	}
 
 	update_nodes(devfd);
