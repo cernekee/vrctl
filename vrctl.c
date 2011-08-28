@@ -80,6 +80,17 @@ static struct node_alias *lookup_next_alias(char *nodename,
 	return NULL;
 }
 
+/* scan the alias list for a nodeid; first match wins */
+static const char *nodeid_to_nodename(int nodeid)
+{
+	struct node_alias *a = alias_head;
+
+	for (; a != NULL; a = a->next)
+		if (nodeid == a->nodeid)
+			return a->nodename;
+	return NULL;
+}
+
 static void parse_rcline(char *filename, int linenum, char *line)
 {
 	char *p = line, tok[BUFLEN];
@@ -453,6 +464,7 @@ static int handle_scene(int devfd, int nodeid, char *arg)
 static void search_by_type(int devfd, int gen_class, char *class_name)
 {
 	int ret, i;
+	const char *nodename;
 
 	info(L_VERBOSE, "%s: searching for type %d (%s)\n", __func__,
 		gen_class, class_name);
@@ -461,8 +473,16 @@ static void search_by_type(int devfd, int gen_class, char *class_name)
 		ret = send_then_recv(devfd, 'F', ">?FI0,%d,0,%d", gen_class, i);
 		if (ret <= 0)
 			break;
-		info(L_NORMAL, "%03d: %s (generic class %d, instance %d)\n",
-			ret, class_name, gen_class, i);
+
+		nodename = nodeid_to_nodename(ret);
+		if (nodename)
+			info(L_NORMAL, "%03d ('%s'): %s "
+				"(generic class %d, instance %d)\n",
+				ret, nodename, class_name, gen_class, i);
+		else
+			info(L_NORMAL, "%03d (unnamed): %s "
+				"(generic class %d, instance %d)\n",
+				ret, class_name, gen_class, i);
 	}
 }
 
