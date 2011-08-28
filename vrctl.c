@@ -59,6 +59,8 @@ struct node_alias {
 static struct node_alias *alias_head = NULL, *alias_tail = NULL;
 static char *rc_port = NULL;
 
+typedef int (*cmd_handler_t)(int devfd, int nodeid, char *arg);
+
 /*
  * RC FILE
  */
@@ -759,8 +761,8 @@ static int handle_upgrade(int devfd, char *firmware)
  * UI
  */
 
-static int run_command(int devfd, char *nodename,
-	int (*handler)(int devfd, int nodeid, char *arg), char *arg)
+static int run_command(int devfd, char *nodename, cmd_handler_t handler,
+	char *arg)
 {
 	int id, ret;
 	struct node_alias *a;
@@ -837,7 +839,7 @@ static void usage(void)
 struct vrctl_cmd {
 	char			*name;
 	int			arg_required;
-	int			(*handler)(int devfd, int nodeid, char *arg);
+	cmd_handler_t		handler;
 };
 
 static struct vrctl_cmd cmd_table[] = {
