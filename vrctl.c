@@ -1,6 +1,6 @@
 /*
  * vrctl - Z-Wave VRC0P utility
- * Copyright 2011 Kevin Cernekee
+ * Copyright 2012 Kevin Cernekee <cernekee@gmail.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -33,6 +33,7 @@
 #include <sys/types.h>
 #include "util.h"
 
+#define VERSION			"0.1"
 #define BUFLEN			64
 #define DEFAULT_DEV		"/dev/vrc0p"
 #define RC_NAME			".vrctlrc"
@@ -822,8 +823,8 @@ static const char optstring[] = "vqx:lu:h";
 
 static void usage(void)
 {
-	printf("vrctl v0.01 - Z-Wave VRC0P utility\n");
-	printf("Copyright 2011 Kevin Cernekee.  License: GPLv2+\n");
+	printf("vrctl v" VERSION " - Z-Wave VRC0P utility\n");
+	printf("Copyright 2012 Kevin Cernekee.  License: GPLv2+\n");
 	printf("This is free software with ABSOLUTELY NO WARRANTY.\n");
 	printf("\n");
 	printf("Usage:\n");
