@@ -1,0 +1,120 @@
+vrctl - Z-Wave VRC0P utility for Linux
+--------------------------------------
+
+vrctl is a command line utility that operates the Leviton VRC0P-1LW (+3)
+Z-wave serial interface unit.  It provides the following capabilities:
+
+ - Turning Z-Wave devices on or off
+ - Setting dimmer levels
+ - Listing all devices present on the network
+ - Upgrading the VRC0P's firmware
+
+The vrctl interface was designed to be at least somewhat familiar to
+users of the X10 Bottlerocket (br) utility.
+
+
+Getting started:
+
+1) The VRC0P unit must be paired to an existing Z-wave network using the
+primary controller.  This does not require any interaction with the
+attached PC.  Typically it is done by holding down the green LED button on
+the front of the VRC0P until it blinks amber, then telling your primary
+controller to include (add) a secondary controller to the network.
+
+2) Next, the VRC0P should be attached to the PC via RS232.  These
+instructions will assume it is connected to /dev/ttyS0 .
+
+3) Now build vrctl:
+
+tar -jxf vrctl*.tar.bz2
+cd vrctl
+make
+
+4) At this point you should be able to list all devices on the Z-wave
+network:
+
+$ vrctl -x /dev/ttyS0 --list
+002 (unnamed): switch/appliance (generic class 16, instance 1)
+003 (unnamed): switch/appliance (generic class 16, instance 2)
+004 (unnamed): switch/appliance (generic class 16, instance 3)
+
+5) You can change the device power states by doing something like:
+
+$ vrctl -x /dev/ttyS0 003 on
+$ vrctl -x /dev/ttyS0 002 toggle 004 off
+$ vrctl -x /dev/ttyS0 005 level 50
+
+6) Optionally, you may create $HOME/.vrctlrc and add settings that will
+be read by vrctl each time it starts.  Example:
+
+port /dev/ttyS0
+
+alias kitchen 2
+alias bedroom 3
+alias bedroom2 4
+alias fan 6
+
+Aliases may reference prior aliases:
+
+alias study bedroom2
+
+Node IDs (002, 003, ...) are persistent until the module is unpaired.  If a
+module is paired and then unpaired, it is likely to be assigned a new node
+ID by the primary controller.  It is usually not possible to control the
+node ID assigned to a module (unlike X10), so it is generally a good idea
+to use vrctl aliases instead of trying to memorize node IDs.
+
+
+Firmware upgrade (experimental):
+
+Firmware packages available from Leviton generally contain two files, e.g.
+
+"ST V0_30_U02.hex" - Main firmware for the ST Micro SoC that runs the
+VRC0P.  This resides on the ST chip's internal flash.
+
+"Zensys V0_30_U01.HEX" - Firmware for the low-level Zensys Z-wave
+transceiver chip.  This resides on a serial EEPROM.
+
+vrctl can upgrade either firmware image over the serial port, avoiding the
+need for Leviton's Windows-based installer.
+
+Upgrading the firmware may brick your device, so use this feature at your
+own risk.
+
+Usage:
+
+$ vrctl -x /dev/ttyS0 -u zensys.hex
+
+$ vrctl -x /dev/ttyS0 -u st.hex
+
+The ST bootloader has an automatic "recovery mode" built in, which allows
+reflashing the image through an alternative protocol if the last attempt
+was not successful.  vrctl will attempt to use the recovery mode if the
+VRC0P is not responsive to normal commands.  You may need to toggle power
+to the unit prior to attempting a recovery flash.
+
+
+Other random tips:
+
+Some of the cheaper Z-Wave controllers have interoperability problems with
+certain modules.  This can manifest itself in a failure to pair, or strange
+behavior with respect to "ALL ON" / "ALL OFF" commands.
+
+Some of the older VRC0P firmware images had problems with node enumeration.
+It doesn't work "great" on current images (some devices don't show up, and
+it sure is slow), but it mostly does what you expect.
+
+The Leviton CTZUS-1US ControlThink ThinkStick makes a decent primary
+controller.  But you will need to use the Leviton RF Installer tool
+(Windows) to set up the network.  Be sure to upgrade the ThinkStick to the
+latest firmware image as well.
+
+
+Contact:
+
+Kevin Cernekee <cernekee@gmail.com>
+
+
+License:
+
+GPLv2+
