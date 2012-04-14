@@ -26,9 +26,9 @@ instructions will assume it is connected to /dev/ttyS0 .
 
 3) Now build vrctl:
 
-tar -jxf vrctl*.tar.bz2
-cd vrctl
-make
+$ tar -jxf vrctl*.tar.bz2
+$ cd vrctl
+$ make
 
 4) At this point you should be able to list all devices on the Z-wave
 network:
@@ -108,6 +108,42 @@ The Leviton CTZUS-1US ControlThink ThinkStick makes a decent primary
 controller.  But you will need to use the Leviton RF Installer tool
 (Windows) to set up the network.  Be sure to upgrade the ThinkStick to the
 latest firmware image as well.
+
+
+Usage page:
+
+$ vrctl -h
+vrctl v0.1 - Z-Wave VRC0P utility
+Copyright 2012 Kevin Cernekee.  License: GPLv2+
+This is free software with ABSOLUTELY NO WARRANTY.
+
+Usage:
+  vrctl [<options>] <nodeid> <command> [ <nodeid> <command> ... ]
+  vrctl [<options>] all { on | off }
+  vrctl [<options>] --list
+
+Options:
+  -v, --verbose       add v's to increase verbosity
+  -q, --quiet         only display errors
+  -x, --port=PORT     set port to use (default: /dev/vrc0p)
+  -l, --list          list all devices in the network
+  -u, --upgrade=FILE  upgrade firmware from FILE
+  -h, --help          this help
+
+<nodeid> is one of the following:
+  a decimal node number: 3 (use vrctl -l to list them)
+  an alias from $HOME/.vrctlrc
+
+<command> is one of the following (case-insensitive):
+  on                  turn the device on
+  off                 turn the device off
+  bounce              turn the device off, then on again
+  toggle              invert the device's on/off state
+  level <n>           set brightness level
+  status              display the current on/off/dimmer status
+  lock                lock (door locks only)
+  unlock              unlock (door locks only)
+  scene <n>           Activate a previously stored scene
 
 
 Contact:
