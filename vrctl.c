@@ -919,9 +919,11 @@ int main(int argc, char **argv)
 		die("error: %s is locked\n", dev);
 	g_locked_tty = dev;
 
-	devfd = open(dev, O_RDWR | O_NOCTTY);
+	devfd = open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
 	if (devfd < 0)
 		die("error: can't open %s: %s\n", dev, strerror(errno));
+	if (fcntl(devfd, F_SETFL, 0) < 0)
+		die("error: can't clear NONBLOCK flag: %s\n", strerror(errno));
 	if (set_tty_defaults(devfd, 9600) < 0)
 		die("error: can't set termios on %s: %s\n",
 			dev, strerror(errno));
