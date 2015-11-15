@@ -282,7 +282,8 @@ static int parse_resp(char *buf, struct resp *r)
 		return 0;
 	}
 
-	if (!strncmp(&buf[5], ":049,005,001,", 13)) {
+	if (!strncmp(&buf[5], ":049,005,001,", 13) ||
+	    !strncmp(&buf[5], ":067,003,002,", 13)) {
 		/* parse temperature sensor result */
 		parse_temp(&buf[18], r);
 	} else {
@@ -490,10 +491,26 @@ static int handle_scene(int devfd, int nodeid, char *arg)
 	return -ret;
 }
 
+static int handle_temp_common(int devfd, int nodeid, char *arg)
+{
+	struct resp r;
+	int precision;
+
+	do {
+		wait_resp(devfd, 'N', &r);
+	} while (r.arg0 != nodeid || (r.type1 != 'F' && r.type1 != 'C'));
+
+	for (precision = 1; r.arg1_precision; r.arg1_precision--)
+		precision *= 10;
+	info(L_NORMAL, "%d.%d%c\n",
+		r.arg1 / precision, r.arg1 % precision, r.type1);
+
+	return r.arg1;
+}
+
 static int handle_temp(int devfd, int nodeid, char *arg)
 {
-	int ret, precision;
-	struct resp r;
+	int ret;
 
 	ret = send_then_recv(devfd, 'X', ">N%03dSE49,4", nodeid);
 	if (ret != 0) {
@@ -502,16 +519,21 @@ static int handle_temp(int devfd, int nodeid, char *arg)
 		return -ret;
 	}
 
-	do {
-		wait_resp(devfd, 'N', &r);
-	} while (r.arg0 != nodeid || r.type1 != 'F');
+	return handle_temp_common(devfd, nodeid, arg);
+}
 
-	for (precision = 1; r.arg1_precision; r.arg1_precision--)
-		precision *= 10;
-	info(L_NORMAL, "%d.%d%c\n",
-		r.arg1 / precision, r.arg1 % precision, r.type1);
+static int handle_setpoint(int devfd, int nodeid, char *arg)
+{
+	int ret;
 
-	return r.arg1;
+	ret = send_then_recv(devfd, 'X', ">N%03dSE67,2,2", nodeid);
+	if (ret != 0) {
+		info(L_WARNING, "node %d returned X%03x for SETPOINT command\n",
+			nodeid, ret);
+		return -ret;
+	}
+
+	return handle_temp_common(devfd, nodeid, arg);
 }
 
 static void search_by_type(int devfd, int gen_class, char *class_name)
@@ -923,6 +945,7 @@ static struct vrctl_cmd cmd_table[] = {
 	{ "unlock",	0,	1,	handle_unlock },
 	{ "scene",	1,	0,	handle_scene },
 	{ "temp",	0,	1,	handle_temp },
+	{ "setpoint",	0,	1,	handle_setpoint },
 };
 
 int main(int argc, char **argv)
