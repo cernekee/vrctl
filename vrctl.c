@@ -49,6 +49,7 @@ struct resp {
 	unsigned int		arg0;
 	char			type1;
 	unsigned int		arg1;
+	unsigned int		arg1_precision;
 };
 
 struct node_alias {
@@ -230,13 +231,33 @@ static int parse_uint(char *str, int maxlen, char *name, int maxval)
 	return ret;
 }
 
+static void parse_temp(char *buf, struct resp *r)
+{
+	int fmt = parse_uint(&buf[0], 3, "temp format", 0);
+	int bytes = fmt & 0x07;
+
+	r->type1 = (fmt & 0x18) ? 'F' : 'C';
+	r->arg1_precision = (fmt >> 5) & 0x07;
+
+	if (!bytes || bytes > 2 || strlen(buf) < 3 + bytes*4)
+		die("error: malformed temp response: %s\n", buf);
+
+	if (bytes == 1) {
+		r->arg1 = parse_uint(&buf[4], 3, "temp", 0);
+	} else {
+		r->arg1 = (parse_uint(&buf[4], 3, "temp", 0) << 8) |
+			  (parse_uint(&buf[8], 3, "temp", 0) << 0);
+	}
+}
+
 static int parse_resp(char *buf, struct resp *r)
 {
 	/*
 	 * Some valid inputs look like:
-	 * >E001
-	 * >X000
-	 * >N003L000
+	 * <E001
+	 * <X000
+	 * <N003L000 (light level)
+	 * <N004:049,005,001,009,075 (temp sensor report)
 	 *
 	 * Numbers are in decimal notation, typically 0-255.
 	 */
@@ -254,8 +275,14 @@ static int parse_resp(char *buf, struct resp *r)
 		return 0;
 	}
 
-	r->type1 = buf[5];
-	r->arg1 = parse_uint(&buf[6], 3, "arg1", 0);
+	if (!strncmp(&buf[5], ":049,005,001,", 13)) {
+		/* parse temperature sensor result */
+		parse_temp(&buf[18], r);
+	} else {
+		/* parse other result types (typically light level) */
+		r->type1 = buf[5];
+		r->arg1 = parse_uint(&buf[6], 3, "arg1", 0);
+	}
 
 	return 0;
 }
@@ -460,6 +487,33 @@ static int handle_scene(int devfd, int nodeid, char *arg)
 		info(L_WARNING, "node %d returned X%03x for SCENE command\n",
 			nodeid, ret);
 	return -ret;
+}
+
+static int handle_temp(int devfd, int nodeid, char *arg)
+{
+	int ret, precision;
+	struct resp r;
+
+	if (nodeid == NODEID_ALL)
+		die("error: can't check status of ALL nodes at once\n");
+
+	ret = send_then_recv(devfd, 'X', ">N%03dSE49,4", nodeid);
+	if (ret != 0) {
+		info(L_WARNING, "node %d returned X%03x for TEMP command\n",
+			nodeid, ret);
+		return -ret;
+	}
+
+	do {
+		wait_resp(devfd, 'N', &r);
+	} while (r.arg0 != nodeid || r.type1 != 'F');
+
+	for (precision = 1; r.arg1_precision; r.arg1_precision--)
+		precision *= 10;
+	info(L_NORMAL, "%d.%d%c\n",
+		r.arg1 / precision, r.arg1 % precision, r.type1);
+
+	return r.arg1;
 }
 
 static void search_by_type(int devfd, int gen_class, char *class_name)
@@ -873,6 +927,7 @@ static struct vrctl_cmd cmd_table[] = {
 	{ "lock",	0,	handle_lock },
 	{ "unlock",	0,	handle_unlock },
 	{ "scene",	1,	handle_scene },
+	{ "temp",	0,	handle_temp },
 };
 
 int main(int argc, char **argv)
