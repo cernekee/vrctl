@@ -63,6 +63,13 @@ static char *rc_port = NULL;
 
 typedef int (*cmd_handler_t)(int devfd, int nodeid, char *arg);
 
+struct vrctl_cmd {
+	char			*name;
+	int			arg_required;
+	int			is_unicast;
+	cmd_handler_t		handler;
+};
+
 /*
  * RC FILE
  */
@@ -398,9 +405,6 @@ static int handle_status_quiet(int devfd, int nodeid, char *arg)
 	int ret;
 	struct resp r;
 
-	if (nodeid == NODEID_ALL)
-		die("error: can't check status of ALL nodes at once\n");
-
 	ret = send_then_recv(devfd, 'X', ">?N%03d", nodeid);
 	if (ret != 0) {
 		info(L_WARNING, "node %d returned X%03x for STATUS command\n",
@@ -454,9 +458,6 @@ static int handle_lock_level(int devfd, int nodeid, int level)
 {
 	int ret;
 
-	if (nodeid == NODEID_ALL)
-		die("error: can't lock/unlock ALL nodes at once\n");
-
 	ret = send_then_recv(devfd, 'X', ">N%03dSS98,1,%d", nodeid, level);
 	if (ret != 0)
 		info(L_WARNING, "node %d returned X%03x for LOCK/UNLOCK "
@@ -493,9 +494,6 @@ static int handle_temp(int devfd, int nodeid, char *arg)
 {
 	int ret, precision;
 	struct resp r;
-
-	if (nodeid == NODEID_ALL)
-		die("error: can't check status of ALL nodes at once\n");
 
 	ret = send_then_recv(devfd, 'X', ">N%03dSE49,4", nodeid);
 	if (ret != 0) {
@@ -836,22 +834,25 @@ static int handle_upgrade(int devfd, char *firmware)
  * UI
  */
 
-static int run_command(int devfd, char *nodename, cmd_handler_t handler,
+static int run_command(int devfd, char *nodename, struct vrctl_cmd *entry,
 	char *arg)
 {
 	int id, ret;
 	struct node_alias *a;
 
 	/* "all" keyword */
-	if (strcasecmp(nodename, "all") == 0)
-		return handler(devfd, NODEID_ALL, arg);
+	if (strcasecmp(nodename, "all") == 0) {
+		if (entry->is_unicast)
+			die("error: this command cannot operate on ALL nodes at once\n");
+		return entry->handler(devfd, NODEID_ALL, arg);
+	}
 
 	/* single or multiple alias match */
 	a = lookup_next_alias(nodename, NULL);
 	if (a) {
 		while (1) {
 			/* note: return status only reflects the LAST command */
-			ret = handler(devfd, a->nodeid, arg);
+			ret = entry->handler(devfd, a->nodeid, arg);
 
 			a = lookup_next_alias(nodename, a);
 			if (a == NULL)
@@ -861,7 +862,7 @@ static int run_command(int devfd, char *nodename, cmd_handler_t handler,
 
 	/* fall back to parsing it as an integer */
 	id = parse_uint(nodename, 0, "node ID", MAX_NODEID);
-	return handler(devfd, id, arg);
+	return entry->handler(devfd, id, arg);
 }
 
 static const struct option longopts[] = {
@@ -911,23 +912,17 @@ static void usage(void)
 	exit(1);
 }
 
-struct vrctl_cmd {
-	char			*name;
-	int			arg_required;
-	cmd_handler_t		handler;
-};
-
 static struct vrctl_cmd cmd_table[] = {
-	{ "on",		0,	handle_on },
-	{ "off",	0,	handle_off },
-	{ "bounce",	0,	handle_bounce },
-	{ "toggle",	0,	handle_toggle },
-	{ "level",	1,	handle_level },
-	{ "status",	0,	handle_status },
-	{ "lock",	0,	handle_lock },
-	{ "unlock",	0,	handle_unlock },
-	{ "scene",	1,	handle_scene },
-	{ "temp",	0,	handle_temp },
+	{ "on",		0,	0,	handle_on },
+	{ "off",	0,	0,	handle_off },
+	{ "bounce",	0,	0,	handle_bounce },
+	{ "toggle",	0,	1,	handle_toggle },
+	{ "level",	1,	0,	handle_level },
+	{ "status",	0,	1,	handle_status },
+	{ "lock",	0,	1,	handle_lock },
+	{ "unlock",	0,	1,	handle_unlock },
+	{ "scene",	1,	0,	handle_scene },
+	{ "temp",	0,	1,	handle_temp },
 };
 
 int main(int argc, char **argv)
@@ -1028,7 +1023,7 @@ int main(int argc, char **argv)
 		}
 
 		/* parse the nodeid(s) and execute the command */
-		run_command(devfd, nodename, entry->handler, arg);
+		run_command(devfd, nodename, entry, arg);
 	}
 
 	update_nodes(devfd);
