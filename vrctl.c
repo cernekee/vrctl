@@ -283,6 +283,7 @@ static int parse_resp(char *buf, struct resp *r)
 	}
 
 	if (!strncmp(&buf[5], ":049,005,001,", 13) ||
+	    !strncmp(&buf[5], ":067,003,001,", 13) ||
 	    !strncmp(&buf[5], ":067,003,002,", 13)) {
 		/* parse temperature sensor result */
 		parse_temp(&buf[18], r);
@@ -542,7 +543,7 @@ static int handle_setpoint(int devfd, int nodeid, char *arg)
 	}
 
 	/* get setpoint temperature */
-	ret = send_then_recv(devfd, 'X', ">N%03dSE67,2,2", nodeid);
+	ret = send_then_recv(devfd, 'X', ">N%03dSE67,2,%d", nodeid, r.arg1);
 	if (ret != 0) {
 		info(L_WARNING, "node %d returned X%03x for SETPOINT command\n",
 			nodeid, ret);
@@ -574,11 +575,11 @@ static int handle_heat_common(int devfd, int nodeid, char *arg, int mode)
 
 	if (setpoint) {
 		if (units)
-			ret = send_then_recv(devfd, 'X', ">N%03dSE67,1,2,9,%d",
-					     nodeid, setpoint);
+			ret = send_then_recv(devfd, 'X', ">N%03dSE67,1,%d,9,%d",
+					     nodeid, mode, setpoint);
 		else
-			ret = send_then_recv(devfd, 'X', ">N%03dSE67,1,2,17,%d",
-					     nodeid, setpoint);
+			ret = send_then_recv(devfd, 'X', ">N%03dSE67,1,%d,17,%d",
+					     nodeid, mode, setpoint);
 		if (ret != 0) {
 			info(L_WARNING,
 				"node %d returned X%03x for SETPOINT command\n",
