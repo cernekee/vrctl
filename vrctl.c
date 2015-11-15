@@ -286,6 +286,9 @@ static int parse_resp(char *buf, struct resp *r)
 	    !strncmp(&buf[5], ":067,003,002,", 13)) {
 		/* parse temperature sensor result */
 		parse_temp(&buf[18], r);
+	} else if (!strncmp(&buf[5], ":064,003,", 9)) {
+		/* parse thermostat mode */
+		r->arg1 = parse_uint(&buf[14], 3, "thermostat mode", 0);
 	} else {
 		/* parse other result types (typically light level) */
 		r->type1 = buf[5];
@@ -525,7 +528,20 @@ static int handle_temp(int devfd, int nodeid, char *arg)
 static int handle_setpoint(int devfd, int nodeid, char *arg)
 {
 	int ret;
+	struct resp r;
 
+	/* get thermostat mode */
+	ret = send_then_recv(devfd, 'X', ">N%03dSE64,2", nodeid);
+	do {
+		wait_resp(devfd, 'N', &r);
+	} while (r.arg0 != nodeid);
+
+	if (r.arg1 == 0) {
+		info(L_NORMAL, "OFF\n");
+		return 0;
+	}
+
+	/* get setpoint temperature */
 	ret = send_then_recv(devfd, 'X', ">N%03dSE67,2,2", nodeid);
 	if (ret != 0) {
 		info(L_WARNING, "node %d returned X%03x for SETPOINT command\n",
@@ -534,6 +550,63 @@ static int handle_setpoint(int devfd, int nodeid, char *arg)
 	}
 
 	return handle_temp_common(devfd, nodeid, arg);
+}
+
+static int handle_fan(int devfd, int nodeid, char *arg)
+{
+	int ret;
+	int enable = parse_uint(arg, 0, "fan enable", 1);
+
+	ret = send_then_recv(devfd, 'X', ">N%03dSE68,1,%d", nodeid, enable);
+	if (ret != 0)
+		info(L_WARNING, "node %d returned X%03x for FAN command\n",
+			nodeid, ret);
+	return ret;
+}
+
+static int handle_heat_common(int devfd, int nodeid, char *arg, int mode)
+{
+	int setpoint = parse_uint(arg, 2, "setpoint", 99);
+	int units = 1, ret;
+
+	if (strlen(arg) >= 3 && tolower(arg[2]) == 'c')
+		units = 0;
+
+	if (setpoint) {
+		if (units)
+			ret = send_then_recv(devfd, 'X', ">N%03dSE67,1,2,9,%d",
+					     nodeid, setpoint);
+		else
+			ret = send_then_recv(devfd, 'X', ">N%03dSE67,1,2,17,%d",
+					     nodeid, setpoint);
+		if (ret != 0) {
+			info(L_WARNING,
+				"node %d returned X%03x for SETPOINT command\n",
+				nodeid, ret);
+			return -ret;
+		}
+	} else {
+		mode = 0;
+	}
+
+	ret = send_then_recv(devfd, 'X', ">N%03dSE64,1,%d", nodeid, mode);
+	if (ret != 0) {
+		info(L_WARNING, "node %d returned X%03x for MODE command\n",
+			nodeid, ret);
+		return -ret;
+	}
+
+	return 0;
+}
+
+static int handle_heat(int devfd, int nodeid, char *arg)
+{
+	return handle_heat_common(devfd, nodeid, arg, 1);
+}
+
+static int handle_cool(int devfd, int nodeid, char *arg)
+{
+	return handle_heat_common(devfd, nodeid, arg, 2);
 }
 
 static void search_by_type(int devfd, int gen_class, char *class_name)
@@ -946,6 +1019,9 @@ static struct vrctl_cmd cmd_table[] = {
 	{ "scene",	1,	0,	handle_scene },
 	{ "temp",	0,	1,	handle_temp },
 	{ "setpoint",	0,	1,	handle_setpoint },
+	{ "fan",	1,	1,	handle_fan },
+	{ "heat",	1,	1,	handle_heat },
+	{ "cool",	1,	1,	handle_cool },
 };
 
 int main(int argc, char **argv)
