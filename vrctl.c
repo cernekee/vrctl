@@ -1001,9 +1001,19 @@ static void usage(void)
 	printf("  toggle              invert the device's on/off state\n");
 	printf("  level <n>           set brightness level\n");
 	printf("  status              display the current on/off/dimmer status\n");
-	printf("  lock                lock (door locks only)\n");
-	printf("  unlock              unlock (door locks only)\n");
-	printf("  scene <n>           Activate a previously stored scene\n");
+	printf("  scene <n>           activate a previously stored scene\n");
+	printf("\n");
+	printf("For door locks only:\n");
+	printf("  lock                lock\n");
+	printf("  unlock              unlock\n");
+	printf("\n");
+	printf("For thermostats only:\n");
+	printf("  temp                read current temperature\n");
+	printf("  setpoint            read current setpoint\n");
+	printf("  fan <n>             set fan to on (1) or auto (0)\n");
+	printf("  heat <n>            enable heater with setpoint N\n");
+	printf("  cool <n>            enable A/C with setpoint N\n");
+	printf("  heat 0              disable heater and A/C\n");
 	exit(1);
 }
 
